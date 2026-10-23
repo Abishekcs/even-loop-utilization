@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Iodine ELU lab - interactive</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --ink: #e6edf3; --muted: #8b949e;
+    --grid: #21262d; --elu: #ff2d78; --cpu: #4da3ff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; padding: 24px;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--grid);
+    border-radius: 12px; padding: 20px 22px; width: min(1000px, 100%);
+    box-shadow: 0 8px 30px #0008;
+  }
+  h1 { font-size: 18px; font-weight: 600; letter-spacing: .2px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 2px 0 14px; }
+  .legend { display: flex; gap: 18px; align-items: center; font-size: 13px; margin-bottom: 10px; flex-wrap: wrap; }
+  .legend label { display: inline-flex; gap: 7px; align-items: center; cursor: pointer; user-select: none; }
+  .legend input { accent-color: var(--elu); }
+  .swatch { width: 22px; height: 3px; border-radius: 2px; display: inline-block; }
+  .swatch.elu { background: var(--elu); } .swatch.cpu { background: var(--cpu); }
+  .lb-elu { color: var(--elu); font-weight: 600; } .lb-cpu { color: var(--cpu); font-weight: 600; }
+  .spacer { flex: 1; }
+  button {
+    background: #1f2630; color: var(--ink); border: 1px solid #30363d;
+    border-radius: 6px; padding: 4px 12px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { background: #2a3340; }
+  canvas {
+    display: block; width: 100%; height: 440px; border-radius: 8px; cursor: grab;
+    touch-action: none; user-select: none; -webkit-user-select: none; outline-offset: 2px;
+  }
+  canvas.dragging { cursor: grabbing; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .notes { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+  .note {
+    border: 1px solid var(--grid); border-radius: 8px; padding: 10px 12px; font-size: 13px;
+    cursor: pointer; transition: background .15s; text-align: left; width: 100%;
+    background: transparent; color: inherit; font: inherit;
+  }
+  .note:hover, .note:focus-visible { background: #1c232d; }
+  .note b { display: block; margin-bottom: 3px; }
+  .note.b1 { border-left: 3px solid #e91e63; }
+  .note.b2 { border-left: 3px solid var(--cpu); }
+  .note.b3 { border-left: 3px solid #00b8a9; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Iodine event-loop utilization vs process CPU%</h1>
+  <div class="sub">1-s scrape window · 1-vCPU VPS · reactor burn / thread burn / hookless freeze</div>
+  <div class="legend">
+    <label><input type="checkbox" id="showElu" checked><span class="swatch elu"></span><span class="lb-elu">ELU (reactor busy)</span></label>
+    <label><input type="checkbox" id="showCpu" checked><span class="swatch cpu"></span><span class="lb-cpu">CPU % (/proc)</span></label>
+    <span class="spacer"></span>
+    <button id="reset">Reset view</button>
+  </div>
+  <canvas id="cv" tabindex="0" role="img"
+    aria-label="Line chart of event-loop utilization and CPU percent over about one minute. Arrow keys pan, plus and minus zoom, zero resets."></canvas>
+  <div class="hint" id="hint">wheel / pinch = zoom · drag = pan · hover = inspect · double-click or Reset = fit · click a card below to zoom to it</div>
+  <div class="notes">
+    <button class="note b1" data-band="1"><b>Reactor burn</b>Compute inside a handler: ELU and CPU spike together (~0.95 / 95%). The reactor is the bottleneck.</button>
+    <button class="note b2" data-band="2"><b>Thread burn - the false alarm</b>Duty-cycled background bursts: CPU% pins ~40% for 12s while ELU stays near 0. /proc screams, reactor fine.</button>
+    <button class="note b3" data-band="3"><b>Freeze - the invisible case</b>Hookless blocking syscall: 9s of missing samples (even metrics froze). Catch-up: elu=0.94 at cpu=0.1%. Only ELU sees it.</button>
+  </div>
+</div>
+<script>
+const DATA = [{"t": 1792683690, "elu": 0.0095, "cpu": 0.0}, {"t": 1792683691, "elu": 0.0075, "cpu": 2.0}, {"t": 1792683692, "elu": 0.0079, "cpu": 0.0}, {"t": 1792683693, "elu": 0.0091, "cpu": 0.0}, {"t": 1792683694, "elu": 0.0061, "cpu": 1.0}, {"t": 1792683695, "elu": 0.0066, "cpu": 1.0}, {"t": 1792683696, "elu": 0.0092, "cpu": 0.0}, {"t": 1792683697, "elu": 0.0072, "cpu": 0.0}, {"t": 1792683698, "elu": 0.0062, "cpu": 2.0}, {"t": 1792683699, "elu": 0.006, "cpu": 0.0}, {"t": 1792683700, "elu": 0.0089, "cpu": 0.0}, {"t": 1792683701, "elu": 0.0194, "cpu": 2.0}, {"t": 1792683702, "elu": 0.0064, "cpu": 1.0}, {"t": 1792683703, "elu": 0.0077, "cpu": 0.0}, {"t": 1792683704, "elu": 0.0072, "cpu": 0.0}, {"t": 1792683705, "elu": 0.0069, "cpu": 1.0}, {"t": 1792683706, "elu": 0.0069, "cpu": 1.0}, {"t": 1792683707, "elu": 0.007, "cpu": 0.0}, {"t": 1792683712, "elu": 0.9548, "cpu": 94.92}, {"t": 1792683713, "elu": 0.0078, "cpu": 0.0}, {"t": 1792683714, "elu": 0.0053, "cpu": 1.0}, {"t": 1792683715, "elu": 0.0079, "cpu": 0.0}, {"t": 1792683716, "elu": 0.0066, "cpu": 1.0}, {"t": 1792683717, "elu": 0.0072, "cpu": 1.0}, {"t": 1792683718, "elu": 0.0224, "cpu": 29.69}, {"t": 1792683719, "elu": 0.0361, "cpu": 40.89}, {"t": 1792683720, "elu": 0.0407, "cpu": 39.92}, {"t": 1792683721, "elu": 0.0424, "cpu": 38.97}, {"t": 1792683722, "elu": 0.05, "cpu": 41.83}, {"t": 1792683723, "elu": 0.058, "cpu": 39.82}, {"t": 1792683724, "elu": 0.0665, "cpu": 39.88}, {"t": 1792683725, "elu": 0.0658, "cpu": 38.95}, {"t": 1792683726, "elu": 0.0651, "cpu": 40.95}, {"t": 1792683727, "elu": 0.0681, "cpu": 39.9}, {"t": 1792683728, "elu": 0.0729, "cpu": 38.98}, {"t": 1792683729, "elu": 0.0789, "cpu": 40.79}, {"t": 1792683730, "elu": 0.0494, "cpu": 11.45}, {"t": 1792683731, "elu": 0.0088, "cpu": 1.0}, {"t": 1792683732, "elu": 0.0087, "cpu": 0.0}, {"t": 1792683733, "elu": 0.0082, "cpu": 1.0}, {"t": 1792683742, "elu": 0.9428, "cpu": 0.1}, {"t": 1792683745, "elu": 0.0108, "cpu": 1.0}, {"t": 1792683746, "elu": 0.0056, "cpu": 0.0}, {"t": 1792683747, "elu": 0.0062, "cpu": 0.0}, {"t": 1792683748, "elu": 0.0073, "cpu": 0.0}, {"t": 1792683749, "elu": 0.0069, "cpu": 1.0}, {"t": 1792683750, "elu": 0.0065, "cpu": 1.0}, {"t": 1792683751, "elu": 0.0067, "cpu": 0.0}, {"t": 1792683752, "elu": 0.0108, "cpu": 1.0}, {"t": 1792683753, "elu": 0.0061, "cpu": 0.0}, {"t": 1792683754, "elu": 0.0059, "cpu": 1.0}, {"t": 1792683755, "elu": 0.0063, "cpu": 0.0}];
+
+const T0 = DATA[0].t;
+// Bands as offsets (seconds) from the first sample: timezone-independent.
+const BANDS = [
+  ["baseline",     0, 16, "#f4fffa05"],
+  ["reactor burn", 16, 27, "rgba(233,30,99,0.06)"],
+  ["thread burn",  27, 41, "rgba(77,163,255,0.06)"],
+  ["freeze",       41, 53, "rgba(0,184,169,0.07)"],
+  ["recovered",    53, 65, "#f4fffa05"],
+].map(([n, a, b, c]) => [n, T0 + a, T0 + b, c]);
+
+// Missing-scrape gaps are derived from the data, not hard-coded.
+const GAPS = [];
+for (let i = 1; i < DATA.length; i++) {
+  const a = DATA[i - 1], b = DATA[i];
+  if (b.t - a.t > 3) GAPS.push({ a, b, missed: b.t - a.t - 1, catchup: b.elu > 0.5 && b.cpu < 5 });
+}
+
+const $ = id => document.getElementById(id);
+const cv = $("cv"), ctx = cv.getContext("2d");
+const showElu = $("showElu"), showCpu = $("showCpu");
+window.onerror = msg => { $("hint").textContent = "JS error: " + msg; };
+
+const M = { l: 52, r: 56, t: 26, b: 28 };
+const MIN_SPAN = 6;
+let view = null; // [t0, t1] seconds; null = fit
+let W = 0, H = 0;
+
+const fitT = () => [T0 - 1, DATA[DATA.length - 1].t + 2];
+const fmtLbl = t => new Date(t * 1000).toTimeString().slice(0, 8);
+const yTop = () => M.t + 6, yBot = () => H - M.b, xW = () => W - M.l - M.r;
+const yElu = v => yBot() - v * (yBot() - yTop());
+const yCpu = v => yElu(v / 100);
+
+function resize() {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  W = r.width; H = r.height;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+function ranges() {
+  const [t0, t1] = view || fitT();
+  return { t0, t1, X: t => M.l + (t - t0) / (t1 - t0) * xW() };
+}
+function niceStep(span, want) {
+  const raw = span / want, p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (m * p >= raw) return m * p;
+  return p * 10;
+}
+
+/* ---------- view helpers ---------- */
+function clampView(v) {
+  const [f0, f1] = fitT(), full = f1 - f0;
+  const span = Math.min(Math.max(v[1] - v[0], MIN_SPAN), full);
+  if (span >= full - 1e-6) return null;
+  const a = Math.max(f0, Math.min(v[0], f1 - span));
+  return [a, a + span];
+}
+function zoomAt(anchor, k) {
+  const [t0, t1] = view || fitT(), span = t1 - t0;
+  const full = fitT()[1] - fitT()[0];
+  const ns = Math.min(Math.max(span * k, MIN_SPAN), full);
+  const a = anchor - (anchor - t0) / span * ns;
+  view = clampView([a, a + ns]);
+}
+function panBy(dt) {
+  const [t0, t1] = view || fitT();
+  view = clampView([t0 + dt, t1 + dt]);
+}
+let anim = 0;
+function animateTo(target) {
+  cancelAnimationFrame(anim);
+  const from = view || fitT(), to = target ? clampView(target) || fitT() : fitT();
+  const dur = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 260;
+  const s = performance.now();
+  const step = now => {
+    const k = dur ? Math.min(1, (now - s) / dur) : 1, e = 1 - Math.pow(1 - k, 3);
+    view = [from[0] + (to[0] - from[0]) * e, from[1] + (to[1] - from[1]) * e];
+    if (k < 1) anim = requestAnimationFrame(step);
+    else view = target ? clampView(target) : null;
+    draw();
+  };
+  anim = requestAnimationFrame(step);
+}
+
+/* ---------- drawing ---------- */
+function draw() {
+  if (!W) return;
+  ctx.clearRect(0, 0, W, H);
+  const { t0, t1, X } = ranges();
+  const px0 = M.l, px1 = M.l + xW();
+
+  // bands
+  for (const [name, ts, te, color] of BANDS) {
+    const x1 = Math.max(px0, X(ts)), x2 = Math.min(px1, X(te));
+    if (x2 <= x1) continue;
+    ctx.fillStyle = color; ctx.fillRect(x1, M.t, x2 - x1, H - M.t - M.b);
+    if (x2 - x1 > 40) {
+      ctx.fillStyle = "rgba(230,237,243,.6)"; ctx.font = "600 12px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText(name, (x1 + x2) / 2, M.t + 14);
+    }
+  }
+
+  // missing-sample gaps
+  for (const g of GAPS) {
+    const x1 = Math.max(px0, X(g.a.t)), x2 = Math.min(px1, X(g.b.t));
+    if (x2 <= x1) continue;
+    ctx.fillStyle = "rgba(255,255,255,0.035)"; ctx.fillRect(x1, M.t, x2 - x1, H - M.t - M.b);
+    if (x2 - x1 > 60) {
+      ctx.fillStyle = "#8b949e"; ctx.font = "11px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText(`${g.missed} missed scrapes`, (x1 + x2) / 2, yBot() - 8);
+    }
+  }
+
+  // grid + axes
+  ctx.font = "11px ui-monospace, monospace"; ctx.lineWidth = 1;
+  const step = niceStep(t1 - t0, 7);
+  ctx.textAlign = "center";
+  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+    const x = X(t);
+    if (x < px0 - 1 || x > px1 + 1) continue;
+    ctx.strokeStyle = "#21262d"; ctx.beginPath(); ctx.moveTo(x, M.t); ctx.lineTo(x, yBot()); ctx.stroke();
+    ctx.fillStyle = "#8b949e"; ctx.fillText(fmtLbl(t), x, H - 10);
+  }
+  for (const v of [0, .25, .5, .75, 1]) {
+    const y = yElu(v);
+    ctx.strokeStyle = "#1b2129"; ctx.beginPath(); ctx.moveTo(px0, y); ctx.lineTo(px1, y); ctx.stroke();
+    ctx.textAlign = "right"; ctx.fillStyle = "#ff2d78"; ctx.fillText(v.toFixed(2), px0 - 6, y + 3);
+    ctx.textAlign = "left"; ctx.fillStyle = "#4da3ff"; ctx.fillText(String(v * 100), px1 + 6, y + 3);
+  }
+  ctx.font = "600 12px sans-serif";
+  ctx.fillStyle = "#ff2d78"; ctx.textAlign = "right"; ctx.fillText("ELU", px0 - 6, M.t - 8);
+  ctx.fillStyle = "#4da3ff"; ctx.textAlign = "left"; ctx.fillText("CPU %", px1 + 6, M.t - 8);
+
+  // series (clipped to the plot area so panned points never spill into margins)
+  ctx.save();
+  ctx.beginPath(); ctx.rect(px0, M.t, xW(), H - M.t - M.b); ctx.clip();
+  const vis = DATA.filter(p => p.t >= t0 - 1 && p.t <= t1 + 1);
+  const segs = getY => {
+    const out = []; let cur = [], last = null;
+    for (const p of vis) {
+      if (last && p.t - last.t > 3) { out.push(cur); cur = []; }
+      cur.push([X(p.t), getY(p)]); last = p;
+    }
+    if (cur.length) out.push(cur);
+    return out;
+  };
+  if (showElu.checked) for (const g of GAPS) { // faint link across each gap
+    ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = "#ffffff22"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(X(g.a.t), yElu(g.a.elu)); ctx.lineTo(X(g.b.t), yElu(g.b.elu)); ctx.stroke(); ctx.restore();
+  }
+  const series = (on, color, getY, r) => {
+    if (!on) return;
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1.8; ctx.lineJoin = "round";
+    for (const s of segs(getY)) {
+      ctx.beginPath(); s.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+      for (const [x, y] of s) { ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }
+    }
+  };
+  series(showCpu.checked, "#4da3ff", p => yCpu(p.cpu ?? 0), 2.4);
+  series(showElu.checked, "#ff2d78", p => yElu(p.elu), 2.6);
+  ctx.restore();
+
+  // "frozen reactor" callout for catch-up samples (high ELU, ~zero CPU)
+  for (const g of GAPS) {
+    if (!g.catchup) continue;
+    const x = X(g.b.t);
+    if (x < px0 - 60 || x > px1 + 60) continue;
+    const y = yElu(g.b.elu);
+    ctx.save(); ctx.setLineDash([5, 4]); ctx.strokeStyle = "#e91e63"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(x, y, 52, 40, 0, 0, 7); ctx.stroke(); ctx.restore();
+    ctx.fillStyle = "#e91e63"; ctx.textAlign = "center";
+    ctx.font = "600 13px sans-serif"; ctx.fillText("frozen reactor", x, y + 62);
+    ctx.font = "12px sans-serif"; ctx.fillText(`elu=${g.b.elu} cpu=${g.b.cpu}% (${g.missed}s gap)`, x, y + 80);
+  }
+  drawCross();
+}
+
+/* ---------- hover ---------- */
+let hover = null; // { t }
+function nearest(t) {
+  let best = DATA[0], bd = Infinity;
+  for (const p of DATA) { const d = Math.abs(p.t - t); if (d < bd) { bd = d; best = p; } }
+  return best;
+}
+function diagnose(p) {
+  if (p.elu > 0.5 && p.cpu < 5) return "reactor stalled, CPU blind";
+  if (p.elu > 0.5) return "reactor saturated";
+  if (p.cpu > 20 && p.elu < 0.2) return "CPU busy, reactor idle";
+  return "";
+}
+function drawCross() {
+  if (!hover) return;
+  const { X } = ranges();
+  const p = nearest(hover.t), x = X(p.t);
+  if (x < M.l || x > M.l + xW()) return;
+  ctx.strokeStyle = "#ffffff33"; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(x, M.t); ctx.lineTo(x, yBot()); ctx.stroke(); ctx.setLineDash([]);
+  for (const [on, y, c] of [[showElu.checked, yElu(p.elu), "#ff2d78"], [showCpu.checked, yCpu(p.cpu ?? 0), "#4da3ff"]]) {
+    if (!on) continue;
+    ctx.fillStyle = c; ctx.strokeStyle = "#0d1117"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, 5, 0, 7); ctx.fill(); ctx.stroke();
+  }
+  const note = diagnose(p);
+  const gap = GAPS.find(g => g.b === p);
+  const lines = [
+    [fmtLbl(p.t), "#e6edf3"],
+    [`ELU ${p.elu.toFixed(4)}`, "#ff2d78"],
+    [`CPU ${p.cpu ?? 0}%`, "#4da3ff"],
+  ];
+  if (gap) lines.push([`after ${gap.missed}s gap`, "#8b949e"]);
+  if (note) lines.push([note, "#e6edf3"]);
+  ctx.font = "12px ui-monospace, monospace";
+  const tw = Math.max(124, ...lines.map(([s]) => ctx.measureText(s).width + 18)), th = 8 + lines.length * 16;
+  let tx = x + 12; if (tx + tw > W - 4) tx = x - 12 - tw;
+  const ty = M.t + 22;
+  ctx.fillStyle = "#0d1117ee"; ctx.strokeStyle = "#30363d";
+  roundRect(tx, ty, tw, th, 6); ctx.fill(); ctx.stroke();
+  ctx.textAlign = "left";
+  lines.forEach(([s, c], i) => { ctx.fillStyle = c; ctx.fillText(s, tx + 8, ty + 18 + i * 16 - 3); });
+}
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+/* ---------- pointer input: mouse, touch, pen (drag-pan, pinch-zoom) ---------- */
+const ptrs = new Map();
+let pinchDist = 0;
+const localX = e => e.clientX - cv.getBoundingClientRect().left;
+const tAtX = x => { const [t0, t1] = view || fitT(); return t0 + (x - M.l) / xW() * (t1 - t0); };
+const pinchInfo = () => {
+  const [a, b] = [...ptrs.values()];
+  return { d: Math.abs(a.x - b.x) || 1, cx: (a.x + b.x) / 2 };
+};
+
+cv.addEventListener("pointerdown", e => {
+  cancelAnimationFrame(anim);
+  ptrs.set(e.pointerId, { x: localX(e) });
+  try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+  cv.classList.add("dragging");
+  if (ptrs.size === 2) pinchDist = pinchInfo().d;
+  if (e.pointerType !== "mouse") { hover = null; }
+});
+cv.addEventListener("pointermove", e => {
+  const x = localX(e);
+  if (ptrs.has(e.pointerId)) {
+    const prev = ptrs.get(e.pointerId); const dx = x - prev.x;
+    ptrs.set(e.pointerId, { x });
+    if (ptrs.size === 2) {
+      const { d, cx } = pinchInfo();
+      zoomAt(tAtX(cx), pinchDist / d); pinchDist = d;
+    } else {
+      const [t0, t1] = view || fitT();
+      panBy(-dx / xW() * (t1 - t0));
+    }
+    hover = e.pointerType === "mouse" ? { t: tAtX(x) } : null;
+  } else if (e.pointerType === "mouse") {
+    hover = { t: tAtX(x) };
+  }
+  draw();
+});
+const release = e => {
+  ptrs.delete(e.pointerId);
+  if (ptrs.size < 2) pinchDist = 0;
+  if (!ptrs.size) cv.classList.remove("dragging");
+};
+cv.addEventListener("pointerup", release);
+cv.addEventListener("pointercancel", release);
+cv.addEventListener("pointerleave", e => { if (!ptrs.size) { hover = null; draw(); } });
+
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  cancelAnimationFrame(anim);
+  zoomAt(tAtX(localX(e)), Math.exp(e.deltaY * 0.0015));
+  if (hover) hover = { t: tAtX(localX(e)) };
+  draw();
+}, { passive: false });
+
+cv.addEventListener("keydown", e => {
+  const [t0, t1] = view || fitT(), mid = (t0 + t1) / 2, span = t1 - t0;
+  if (e.key === "ArrowLeft") panBy(-span * .15);
+  else if (e.key === "ArrowRight") panBy(span * .15);
+  else if (e.key === "+" || e.key === "=") zoomAt(mid, .8);
+  else if (e.key === "-") zoomAt(mid, 1.25);
+  else if (e.key === "0") view = null;
+  else return;
+  e.preventDefault(); draw();
+});
+
+/* ---------- controls ---------- */
+$("reset").onclick = () => animateTo(null);
+cv.addEventListener("dblclick", () => animateTo(null));
+[showElu, showCpu].forEach(el => el.addEventListener("change", draw));
+document.querySelectorAll(".note").forEach(n => n.addEventListener("click", () => {
+  const [, ts, te] = BANDS[+n.dataset.band];
+  animateTo([ts - 2, te + 2]);
+  cv.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}));
+new ResizeObserver(resize).observe(cv);
+resize();
+</script>
+</body>
+</html>
